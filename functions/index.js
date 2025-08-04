@@ -1,4 +1,4 @@
-import { customAlphabet } from 'https://jspm.dev/nanoid@4.0.0';
+import { customAlphabet } from "https://esm.sh/nanoid@4.0.0?bundle";
 const nanoid = customAlphabet('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', 7);
 
 export async function onRequestPost(context) {
