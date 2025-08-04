@@ -88,13 +88,22 @@ export async function onRequest(context) {
     
     console.log(`Debug: Final fetch response status: ${response.status}`);
 
+    // 如果 fetch 失败，直接返回错误响应
+    if (!response.ok) {
+        return response;
+    }
+
     // 克隆响应，以便修改响应头
     const newResponse = new Response(response.body, response);
     
-    // 检查并移除可能存在的 Content-Disposition 头部
-    if (newResponse.headers.has('Content-Disposition')) {
-        newResponse.headers.delete('Content-Disposition');
-        console.log("Debug: Removed 'Content-Disposition' header to prevent download.");
+    // --- 关键改动：主动设置响应头 ---
+    // 强制 Content-Disposition 为 inline，使其在浏览器中显示
+    newResponse.headers.set('Content-Disposition', 'inline');
+
+    // 移除 Content-Type 中的 charset 信息，以避免潜在的渲染问题
+    const contentType = newResponse.headers.get('Content-Type');
+    if (contentType) {
+        newResponse.headers.set('Content-Type', contentType.split(';')[0]);
     }
 
     return newResponse;
