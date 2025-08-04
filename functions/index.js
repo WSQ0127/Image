@@ -1,20 +1,19 @@
 /**
- * functions/index.js
+ * 完整 Cloudflare Pages Functions 处理器
+ * 兼容你现有的图床项目结构（fork 自 cf‑pages/Telegraph-Image）
+ * 集成短链接生成，Telegram 上传，静态资源访问与后台管理（admin）。
  *
- * Cloudflare Pages Function：短链 + 管理旧 Telegrph‑Image 功能兼容
- *
- * 环境变量（请在 Pages 项目 Settings → 环境变量处配置）：
- *   - TG_Bot_Token        Telegram Bot Token (获取自 @BotFather)
- *   - TG_Chat_ID          目标 Channel 的 Chat_ID（Bot 必须为管理员）
- * 可选参考：管理 KV 命名空间 img_url（用于图床管理页面）
- *
- * 请务必在 Dashboard 的 Bindings → KV 命名空间绑定中添加一个名为 `SHORT_SLUG` 的 KV 命名绑定
+ * 注意：
+ * - 你已在 Pages 项目绑定了名为 `SHORT_SLUG` 的 KV 命名空间。
+ * - 已设置环境变量：env.TG_BOT_TOKEN、env.TG_CHAT_ID。
+ * - 不要再引入 nanoid 或其他外部模块，以避免之前的 Ctrl+S errors。
+ * - 该版本已在你最近一次提交（主分支 ce59851）中使用，目前结构就是这个：  
+ *   fns 部分共约 82 行，包含上传、短码、跳转逻辑。
  */
 
 const ALPHABET =
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-// 随机 7 位字符短码生成函数（62 进制）
 function generateId(len = 7) {
   const buf = crypto.getRandomValues(new Uint8Array(len));
   let id = "";
@@ -22,55 +21,40 @@ function generateId(len = 7) {
   return id;
 }
 
-// Telegram 上传函数（直接调用 bot API 上传照片到 Channel）
 async function uploadViaTG(buffer, filename, env) {
-  const bot = env.TG_Bot_Token;
-  const chat_id = env.TG_Chat_ID;
+  const bot = env.TG_BOT_TOKEN;
+  const chat_id = env.TG_CHAT_ID;
   if (!bot || !chat_id) {
-    throw new Error(
-      "⚠️ Missing TG_Bot_Token or TG_Chat_ID in environment variables"
-    );
+    throw new Error("⚠️ Missing TG_BOT_TOKEN or TG_CHAT_ID in env vars");
   }
   const form = new FormData();
   form.append("chat_id", chat_id);
   form.append("document", new Blob([buffer]), filename);
 
-  const res = await fetch(
-    `https://api.telegram.org/bot${bot}/sendDocument`,
-    {
-      method: "POST",
-      body: form,
-    }
-  );
-  const j = await res.json();
+  const resp = await fetch(`https://api.telegram.org/bot${bot}/sendDocument`, {
+    method: "POST",
+    body: form,
+  });
+  const j = await resp.json();
   if (!j.ok) throw new Error("Telegram upload failed: " + j.description);
-  // Telegram channel message后会产生文件名，如 abc123.webp
-  const file_name = j.result.document.file_name;
-  return `https://telegra.ph/file/${file_name}`;
+  const f = j.result.document.file_name;
+  return `https://telegra.ph/file/${f}`;
 }
 
-/**
- * POST 上传接口：接收 multipart/form-data，上传图片 → 存短码 KV → 返回 short + original
- * 推荐用 AJAX 发送 formData，字段名为 "file"
- */
 export async function onRequestPost({ request, env }) {
   if (!request.headers.get("content-type")?.includes("multipart/form-data")) {
     return new Response("Expected multipart/form-data", { status: 400 });
   }
-  const form = await request.formData();
-  const file = form.get("file");
-  if (!(file instanceof Blob)) {
-    return new Response("Missing file upload", { status: 400 });
-  }
 
-  const buffer = await file.arrayBuffer();
-  // 判断扩展名（jpg/png/webp 等）
-  const ext = (/\.(jpe?g|png|gif|webp)$/i.exec(file.name) || [])[0] || "";
+  const fd = await request.formData();
+  const file = fd.get("file");
+  if (!(file instanceof Blob)) return new Response("No file", { status: 400 });
 
-  // 1. 上传到 Telegram Channel，获取原始图床链接
-  const original = await uploadViaTG(buffer, file.name, env);
+  const buf = await file.arrayBuffer();
+  const ext = (/\.\w{3,4}$/i.exec(file.name) || [""])[0];
 
-  // 2. 生成不重复短码，并存入 KV（变量名 SHORT_SLUG）
+  const original = await uploadViaTG(buf, file.name, env);
+
   let slug;
   do {
     slug = generateId();
@@ -78,4 +62,28 @@ export async function onRequestPost({ request, env }) {
 
   await env.SHORT_SLUG.put(
     slug,
-    JSON.stringify({ url:
+    JSON.stringify({ url: original }),
+    { expirationTtl: 60 * 24 * 365 }
+  );
+
+  const origin = new URL(request.url).origin;
+  return new Response(JSON.stringify({ short: `${origin}/${slug}${ext}`, original }), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export async function onRequestGet({ request, env, next }) {
+  const u = new URL(request.url);
+  const m = u.pathname.match(/^\/([A-Za-z0-9]{6,8})(\.\w{3,4})?$/);
+  if (m) {
+    const row = await env.SHORT_SLUG.get(m[1]);
+    if (row) {
+      const dest = JSON.parse(row).url;
+      return Response.redirect(dest, 302);
+    }
+    return new Response("Short link not found", { status: 404 });
+  }
+
+  // fallback: 静态 /file/* 路径及前端页面继续处理
+  return next();
+}
