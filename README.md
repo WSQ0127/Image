@@ -1,5 +1,8 @@
 # Telegraph-Image
 
+updata 2025.08.04：
+- 在原项目的基础上实现短链接
+
 免费图片托管解决方案，Flickr/imgur 替代品。使用 Cloudflare Pages 和 Telegraph。
 
 [English](README-EN.md)|中文
