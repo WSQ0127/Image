@@ -26,52 +26,39 @@ export async function onRequest(context) {
     const url = new URL(request.url);
 
     let fileUrl = null;
-    let filename = params.id || url.pathname.split('/').pop();
+    let filename = params.id;
 
-    if (!filename) {
-        return new Response('File not found.', { status: 404 });
-    }
-
-    // 尝试从 KV 存储中获取元数据
-    let metadata = null;
-    try {
-        const record = await env.img_url.getWithMetadata(filename, { type: 'text' });
-        if (record && record.metadata) {
-            metadata = record.metadata;
+    // 如果是短链接请求
+    if (filename) {
+        const { metadata } = await env.img_url.getWithMetadata(filename, { type: 'text' });
+        if (metadata && metadata.fileName) {
+            const originalFileId = metadata.fileName.split('.')[0];
+            const filePath = await getFilePath(env, originalFileId);
+            if (filePath) {
+                fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
+            }
         }
-    } catch (error) {
-        console.error("Error fetching metadata from KV:", error.message);
-        // 如果 KV 存储出错，继续执行，不直接崩溃
-    }
+    } else {
+        // 如果不是短链接，尝试按原始长链接处理
+        const pathParts = url.pathname.split('/');
+        const lastPart = pathParts.pop();
 
-    // 根据 metadata 中的文件名或当前 URL 路径构建 file_id
-    let fileIdToFetch = null;
-    if (metadata && metadata.fileName) {
-        fileIdToFetch = metadata.fileName.split('.')[0];
-    } else if (filename.length > 39) {
-        // 这是长链接，直接从文件名中提取 file_id
-        fileIdToFetch = filename.split('.')[0];
-    }
-
-    // 构建文件 URL
-    if (fileIdToFetch) {
-        const filePath = await getFilePath(env, fileIdToFetch);
-        if (filePath) {
-            fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
+        if (lastPart && lastPart.length > 39) {
+            const fileId = lastPart.split('.')[0];
+            const filePath = await getFilePath(env, fileId);
+            if (filePath) {
+                fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
+            }
+        } else {
+            fileUrl = 'https://telegra.ph/' + url.pathname + url.search;
         }
     }
 
-    // 如果以上都失败，回退到 Telegra.ph 链接
-    if (!fileUrl) {
-        fileUrl = 'https://telegra.ph/' + url.pathname + url.search;
-    }
-    
-    // 如果最终还是没有找到文件 URL，返回 404
     if (!fileUrl) {
         return new Response('File not found.', { status: 404 });
     }
 
-    // --- 文件下载和过滤逻辑 ---
+    // 下载文件并返回
     const response = await fetch(fileUrl, {
         method: request.method,
         headers: request.headers,
@@ -82,35 +69,39 @@ export async function onRequest(context) {
         return response;
     }
 
-    // 只有在是短链接且 KV 可用时才执行元数据相关逻辑
-    if (params.id && env.img_url) {
-        // 如果元数据为空，则初始化
-        if (!metadata) {
-            metadata = {
-                ListType: "None",
-                Label: "None",
-                TimeStamp: Date.now(),
-                liked: false,
-                fileName: filename,
-                fileSize: 0,
-            };
+    // --- 元数据和过滤逻辑 ---
+    // 这部分只在短链接存在时才执行
+    if (filename && env.img_url) {
+        let metadata = {
+            ListType: "None",
+            Label: "None",
+            TimeStamp: Date.now(),
+            liked: false,
+            fileName: filename,
+            fileSize: 0,
+        };
+
+        const record = await env.img_url.getWithMetadata(filename);
+        if (record && record.metadata) {
+            metadata = record.metadata;
+        } else {
             await env.img_url.put(filename, "", { metadata });
         }
 
-        // --- 过滤和重定向逻辑 ---
-        if (metadata.ListType === "White") {
+        const isAdmin = request.headers.get('Referer')?.includes(`${url.origin}/admin`);
+        if (isAdmin) {
             return response;
-        } else if (metadata.ListType === "Block" || metadata.Label === "adult") {
-            const referer = request.headers.get('Referer');
-            const redirectUrl = referer ? "https://static-res.pages.dev/teleimage/img-block-compressed.png" : `${url.origin}/block-img.html`;
+        }
+        
+        if (metadata.ListType === "White") return response;
+        if (metadata.ListType === "Block" || metadata.Label === "adult") {
+            const redirectUrl = `https://static-res.pages.dev/teleimage/img-block-compressed.png`;
             return Response.redirect(redirectUrl, 302);
         }
-
         if (env.WhiteList_Mode === "true") {
             return Response.redirect(`${url.origin}/whitelist-on.html`, 302);
         }
         
-        // 内容审核
         if (env.ModerateContentApiKey && !metadata.Label) {
             try {
                 const moderateUrl = `https://api.moderatecontent.com/moderate/?key=${env.ModerateContentApiKey}&url=${fileUrl}`;
