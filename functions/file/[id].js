@@ -23,7 +23,6 @@ export async function onRequest(context) {
     let originalFileId = null;
     let fileUrl = null;
 
-    // 如果没有找到文件名，直接返回 404
     if (!shortFilename) {
         return new Response('File not found.', { status: 404 });
     }
@@ -37,9 +36,7 @@ export async function onRequest(context) {
     }
     
     // --- ORIGINAL LOGIC: 如果没有短链接，则回退到原始的长链接逻辑 ---
-    // 无论是从 KV 存储中获取的，还是旧的长链接，都使用这个逻辑。
     if (originalFileId) {
-        // 如果我们找到了原始的文件ID，就用它来获取文件路径
         const filePath = await getFilePath(env, originalFileId);
         if (filePath) {
             fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
@@ -47,7 +44,6 @@ export async function onRequest(context) {
             return new Response('File not found in Telegram.', { status: 404 });
         }
     } else {
-        // 这是您原始的代码逻辑，用于处理来自 telegra.ph 或旧的长 URL
         if (shortFilename.length > 39) {
             const filePath = await getFilePath(env, shortFilename.split(".")[0]);
             fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
@@ -56,12 +52,10 @@ export async function onRequest(context) {
         }
     }
 
-    // 如果经过所有逻辑后 fileUrl 仍然为空，说明文件未找到
     if (!fileUrl) {
         return new Response('File not found.', { status: 404 });
     }
 
-    // 使用最终确定的 fileUrl 去下载文件
     const response = await fetch(fileUrl, {
         method: request.method,
         headers: request.headers,
@@ -72,47 +66,41 @@ export async function onRequest(context) {
 
     console.log(response.ok, response.status);
 
-    // --- 原有逻辑：权限和元数据处理 ---
-
-    // 允许管理页面直接访问图片
     const isAdmin = request.headers.get('Referer')?.includes(`${url.origin}/admin`);
     if (isAdmin) {
         return response;
     }
 
-    // 检查 KV 存储是否可用
     if (!env.img_url) {
         console.log("KV storage not available, returning image directly");
         return response;
     }
 
-    // 使用 shortFilename 作为键来查询 KV
     let record = await env.img_url.getWithMetadata(shortFilename);
+    let currentMetadata = record && record.metadata ? record.metadata : {};
+
     if (!record || !record.metadata) {
         console.log("Metadata not found, initializing...");
-        record = {
-            metadata: {
-                ListType: "None",
-                Label: "None",
-                TimeStamp: Date.now(),
-                liked: false,
-                fileName: shortFilename, // 这里保存的是短文件名
-                fileSize: 0,
-            }
+        currentMetadata = {
+            ListType: "None",
+            Label: "None",
+            TimeStamp: Date.now(),
+            liked: false,
+            fileName: shortFilename, 
+            fileSize: 0,
         };
-        await env.img_url.put(shortFilename, "", { metadata: record.metadata });
+        await env.img_url.put(shortFilename, "", { metadata: currentMetadata });
     }
 
     const metadata = {
-        ListType: record.metadata.ListType || "None",
-        Label: record.metadata.Label || "None",
-        TimeStamp: record.metadata.TimeStamp || Date.now(),
-        liked: record.metadata.liked !== undefined ? record.metadata.liked : false,
-        fileName: record.metadata.fileName || shortFilename,
-        fileSize: record.metadata.fileSize || 0,
+        ListType: currentMetadata.ListType || "None",
+        Label: currentMetadata.Label || "None",
+        TimeStamp: currentMetadata.TimeStamp || Date.now(),
+        liked: currentMetadata.liked !== undefined ? currentMetadata.liked : false,
+        fileName: currentMetadata.fileName || shortFilename,
+        fileSize: currentMetadata.fileSize || 0,
     };
 
-    // 基于 ListType 和 Label 处理重定向
     if (metadata.ListType === "White") {
         return response;
     } else if (metadata.ListType === "Block" || metadata.Label === "adult") {
@@ -121,12 +109,10 @@ export async function onRequest(context) {
         return Response.redirect(redirectUrl, 302);
     }
 
-    // 检查是否开启了白名单模式
     if (env.WhiteList_Mode === "true") {
         return Response.redirect(`${url.origin}/whitelist-on.html`, 302);
     }
 
-    // 如果开启了内容审核 API，则进行审核
     if (env.ModerateContentApiKey) {
         try {
             console.log("Starting content moderation...");
@@ -153,11 +139,9 @@ export async function onRequest(context) {
         }
     }
 
-    // 保存更新后的元数据
     console.log("Saving metadata");
     await env.img_url.put(shortFilename, "", { metadata });
 
-    // 返回文件内容
     return response;
 }
 
