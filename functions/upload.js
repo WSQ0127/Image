@@ -48,6 +48,27 @@ export async function onRequestPost(context) {
         if (!fileId) {
             throw new Error('Failed to get file ID');
         }
+        
+        // ✨ 添加这三行代码来生成一个短ID
+        const shortId = Math.random().toString(36).slice(2, 10);
+        const newFilename = `${shortId}.${fileExtension}`;
+        const originalFilename = `${fileId}.${fileExtension}`;
+        
+        // 将文件信息保存到 KV 存储
+        if (env.img_url) {
+            // ✨ 修改这里，将 newFilename 作为键来存储
+            await env.img_url.put(newFilename, "", {
+                metadata: {
+                    TimeStamp: Date.now(),
+                    ListType: "None",
+                    Label: "None",
+                    liked: false,
+                    // ✨ 将原始文件名也保存下来，以备不时之需
+                    fileName: originalFilename,
+                    fileSize: uploadFile.size,
+                }
+            });
+        }
 
         // 将文件信息保存到 KV 存储
         if (env.img_url) {
@@ -64,7 +85,7 @@ export async function onRequestPost(context) {
         }
 
         return new Response(
-            JSON.stringify([{ 'src': `/file/${fileId}.${fileExtension}` }]),
+            JSON.stringify([{ 'src': `/file/${newFilename}` }]), // ✨ 修改这里
             {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' }
