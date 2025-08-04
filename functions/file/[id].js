@@ -6,23 +6,30 @@ export async function onRequest(context) {
     } = context;
 
     const url = new URL(request.url);
-    let fileUrl = 'https://telegra.ph/' + url.pathname + url.search
-    if (url.pathname.length > 39) { // Path length > 39 indicates file uploaded via Telegram Bot API
-        const formdata = new FormData();
-        formdata.append("file_id", url.pathname);
+    const shortFilename = url.pathname.split('/file/')[1]; // 获取短文件名，例如 'abc12345.jpg'
 
-        const requestOptions = {
-            method: "POST",
-            body: formdata,
-            redirect: "follow"
-        };
-        // /file/AgACAgEAAxkDAAMDZt1Gzs4W8dQPWiQJxO5YSH5X-gsAAt-sMRuWNelGOSaEM_9lHHgBAAMCAANtAAM2BA.png
-        //get the AgACAgEAAxkDAAMDZt1Gzs4W8dQPWiQJxO5YSH5X-gsAAt-sMRuWNelGOSaEM_9lHHgBAAMCAANtAAM2BA
-        console.log(url.pathname.split(".")[0].split("/")[2])
-        const filePath = await getFilePath(env, url.pathname.split(".")[0].split("/")[2]);
-        console.log(filePath)
-        fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
+    if (!shortFilename) {
+        return new Response('File not found.', { status: 404 });
     }
+    
+    // 从 KV 存储中获取元数据
+    const { metadata } = await env.img_url.getWithMetadata(shortFilename, { type: 'text' });
+    
+    if (!metadata || !metadata.fileName) {
+        return new Response('File not found in KV.', { status: 404 });
+    }
+
+    // 从元数据中获取原始的 Telegram 文件名
+    const originalFilename = metadata.fileName;
+    const originalFileId = originalFilename.split('.')[0];
+
+    // 使用原始的 fileId 去构建 Telegram 的下载链接
+    const filePath = await getFilePath(env, originalFileId);
+    if (!filePath) {
+        return new Response('Failed to get file path from Telegram.', { status: 500 });
+    }
+
+    const fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
 
     const response = await fetch(fileUrl, {
         method: request.method,
