@@ -27,15 +27,36 @@ export async function onRequest(context) {
         return new Response('File not found.', { status: 404 });
     }
 
-    // --- NEW LOGIC: 首先尝试处理短链接 ---
-    // 从 KV 存储中根据短文件名获取元数据
-    const { metadata } = await env.img_url.getWithMetadata(shortFilename, { type: 'text' });
-    if (metadata && metadata.fileName) {
-        // 从元数据中提取原始的长 Telegram 文件ID
-        originalFileId = metadata.fileName.split('.')[0];
+    // --- 首先尝试处理短链接和元数据 ---
+    let metadata = {};
+    if (env.img_url) {
+        const { metadata: storedMetadata } = await env.img_url.getWithMetadata(shortFilename, { type: 'text' });
+        if (storedMetadata) {
+            metadata = storedMetadata;
+        } else {
+            // 如果元数据不存在，则初始化
+            metadata = {
+                ListType: "None",
+                Label: "None",
+                TimeStamp: Date.now(),
+                liked: false,
+                fileName: shortFilename,
+                fileSize: 0,
+            };
+            await env.img_url.put(shortFilename, "", { metadata });
+        }
     }
-    
-    // --- ORIGINAL LOGIC: 如果没有短链接，则回退到原始的长链接逻辑 ---
+
+    // 根据元数据中的文件名来决定文件ID
+    if (metadata.fileName && metadata.fileName !== shortFilename) {
+        // 如果元数据中的文件名是原始长文件名
+        originalFileId = metadata.fileName.split('.')[0];
+    } else if (shortFilename.length > 39) {
+        // 如果短文件名本身就是长文件ID（旧的逻辑）
+        originalFileId = shortFilename.split('.')[0];
+    }
+
+    // --- 根据文件ID构建最终的下载链接 ---
     if (originalFileId) {
         const filePath = await getFilePath(env, originalFileId);
         if (filePath) {
@@ -44,12 +65,8 @@ export async function onRequest(context) {
             return new Response('File not found in Telegram.', { status: 404 });
         }
     } else {
-        if (shortFilename.length > 39) {
-            const filePath = await getFilePath(env, shortFilename.split(".")[0]);
-            fileUrl = `https://api.telegram.org/file/bot${env.TG_Bot_Token}/${filePath}`;
-        } else {
-            fileUrl = 'https://telegra.ph/' + url.pathname + url.search;
-        }
+        // 如果不是 Telegram 文件，回退到 Telegra.ph 的链接
+        fileUrl = 'https://telegra.ph/' + url.pathname + url.search;
     }
 
     if (!fileUrl) {
@@ -71,36 +88,15 @@ export async function onRequest(context) {
         return response;
     }
 
+    // --- 应用所有过滤和重定向逻辑 ---
+    
+    // 如果 KV 存储不可用，直接返回
     if (!env.img_url) {
         console.log("KV storage not available, returning image directly");
         return response;
     }
 
-    let record = await env.img_url.getWithMetadata(shortFilename);
-    let currentMetadata = record && record.metadata ? record.metadata : {};
-
-    if (!record || !record.metadata) {
-        console.log("Metadata not found, initializing...");
-        currentMetadata = {
-            ListType: "None",
-            Label: "None",
-            TimeStamp: Date.now(),
-            liked: false,
-            fileName: shortFilename, 
-            fileSize: 0,
-        };
-        await env.img_url.put(shortFilename, "", { metadata: currentMetadata });
-    }
-
-    const metadata = {
-        ListType: currentMetadata.ListType || "None",
-        Label: currentMetadata.Label || "None",
-        TimeStamp: currentMetadata.TimeStamp || Date.now(),
-        liked: currentMetadata.liked !== undefined ? currentMetadata.liked : false,
-        fileName: currentMetadata.fileName || shortFilename,
-        fileSize: currentMetadata.fileSize || 0,
-    };
-
+    // 处理 ListType 和 Label
     if (metadata.ListType === "White") {
         return response;
     } else if (metadata.ListType === "Block" || metadata.Label === "adult") {
@@ -109,37 +105,36 @@ export async function onRequest(context) {
         return Response.redirect(redirectUrl, 302);
     }
 
+    // 检查白名单模式
     if (env.WhiteList_Mode === "true") {
         return Response.redirect(`${url.origin}/whitelist-on.html`, 302);
     }
 
+    // 内容审核逻辑
     if (env.ModerateContentApiKey) {
         try {
             console.log("Starting content moderation...");
-            const moderateUrl = `https://api.moderatecontent.com/moderate/?key=${env.ModerateContentApiKey}&url=https://telegra.ph${url.pathname}${url.search}`;
+            const moderateUrl = `https://api.moderatecontent.com/moderate/?key=${env.ModerateContentApiKey}&url=${fileUrl}`;
             const moderateResponse = await fetch(moderateUrl);
 
-            if (!moderateResponse.ok) {
-                console.error("Content moderation API request failed: " + moderateResponse.status);
-            } else {
+            if (moderateResponse.ok) {
                 const moderateData = await moderateResponse.json();
-
                 if (moderateData && moderateData.rating_label) {
                     metadata.Label = moderateData.rating_label;
-
                     if (moderateData.rating_label === "adult") {
-                        console.log("Content marked as adult, saving metadata and redirecting");
                         await env.img_url.put(shortFilename, "", { metadata });
                         return Response.redirect(`${url.origin}/block-img.html`, 302);
                     }
                 }
+            } else {
+                console.error("Content moderation API request failed: " + moderateResponse.status);
             }
         } catch (error) {
             console.error("Error during content moderation: " + error.message);
         }
     }
 
-    console.log("Saving metadata");
+    // 保存更新后的元数据
     await env.img_url.put(shortFilename, "", { metadata });
 
     return response;
