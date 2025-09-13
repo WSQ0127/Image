@@ -21,7 +21,6 @@ export async function onRequestPost(context) {
         const telegramFormData = new FormData();
         telegramFormData.append("chat_id", env.TG_Chat_ID);
 
-        // 根据文件类型选择合适的上传方式
         let apiEndpoint;
         if (uploadFile.type.startsWith('image/')) {
             telegramFormData.append("photo", uploadFile);
@@ -48,44 +47,30 @@ export async function onRequestPost(context) {
         if (!fileId) {
             throw new Error('Failed to get file ID');
         }
-        
-        // ✨ 添加这三行代码来生成一个短ID
+
+        // ✨ 新增：生成一个短 ID
         const shortId = Math.random().toString(36).slice(2, 10);
         const newFilename = `${shortId}.${fileExtension}`;
         const originalFilename = `${fileId}.${fileExtension}`;
-        
+
         // 将文件信息保存到 KV 存储
         if (env.img_url) {
-            // ✨ 修改这里，将 newFilename 作为键来存储
+            // ✨ 修改：以短文件名作为键，元数据中保存原始文件名
             await env.img_url.put(newFilename, "", {
                 metadata: {
                     TimeStamp: Date.now(),
                     ListType: "None",
                     Label: "None",
                     liked: false,
-                    // ✨ 将原始文件名也保存下来，以备不时之需
                     fileName: originalFilename,
                     fileSize: uploadFile.size,
                 }
             });
         }
 
-        // 将文件信息保存到 KV 存储
-        if (env.img_url) {
-            await env.img_url.put(`${fileId}.${fileExtension}`, "", {
-                metadata: {
-                    TimeStamp: Date.now(),
-                    ListType: "None",
-                    Label: "None",
-                    liked: false,
-                    fileName: fileName,
-                    fileSize: uploadFile.size,
-                }
-            });
-        }
-
         return new Response(
-            JSON.stringify([{ 'src': `/file/${newFilename}` }]), // ✨ 修改这里
+            // ✨ 修改：返回的 URL 中使用短文件名
+            JSON.stringify([{ 'src': `/file/${newFilename}` }]), 
             {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' }
@@ -103,9 +88,9 @@ export async function onRequestPost(context) {
     }
 }
 
+// 以下是原始代码中的辅助函数，无需改动
 function getFileId(response) {
     if (!response.ok || !response.result) return null;
-
     const result = response.result;
     if (result.photo) {
         return result.photo.reduce((prev, current) =>
@@ -115,37 +100,29 @@ function getFileId(response) {
     if (result.document) return result.document.file_id;
     if (result.video) return result.video.file_id;
     if (result.audio) return result.audio.file_id;
-
     return null;
 }
 
 async function sendToTelegram(formData, apiEndpoint, env, retryCount = 0) {
     const MAX_RETRIES = 2;
     const apiUrl = `https://api.telegram.org/bot${env.TG_Bot_Token}/${apiEndpoint}`;
-
     try {
         const response = await fetch(apiUrl, { method: "POST", body: formData });
         const responseData = await response.json();
-
         if (response.ok) {
             return { success: true, data: responseData };
         }
-
-        // 图片上传失败时转为文档方式重试
         if (retryCount < MAX_RETRIES && apiEndpoint === 'sendPhoto') {
-            console.log('Retrying image as document...');
             const newFormData = new FormData();
             newFormData.append('chat_id', formData.get('chat_id'));
             newFormData.append('document', formData.get('photo'));
             return await sendToTelegram(newFormData, 'sendDocument', env, retryCount + 1);
         }
-
         return {
             success: false,
             error: responseData.description || 'Upload to Telegram failed'
         };
     } catch (error) {
-        console.error('Network error:', error);
         if (retryCount < MAX_RETRIES) {
             await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
             return await sendToTelegram(formData, apiEndpoint, env, retryCount + 1);
